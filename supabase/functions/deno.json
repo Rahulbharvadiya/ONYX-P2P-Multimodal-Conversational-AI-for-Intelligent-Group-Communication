@@ -1,0 +1,18 @@
+{
+  // Import map applied when the Supabase CLI bundles/deploys functions from
+  // this directory, and when `deno check` is run from inside it.
+  // Must stay in sync with the root `deno.json` (see the contract note there)
+  // — CI type-checks from the repo root using that file.
+  //
+  // npm: (not jsr:) on purpose: the JSR build of @supabase/supabase-js
+  // hard-pins its npm dependencies (e.g. npm:@supabase/realtime-js@2.112.4),
+  // which is what broke CI; the npm package resolves the same code with
+  // normal semver ranges. Version matches the frontend package-lock.json.
+  "imports": {
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.112.4"
+  },
+  "compilerOptions": {
+    "lib": ["deno.window", "dom"],
+    "strict": true
+  }
+}

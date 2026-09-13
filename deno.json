@@ -1,0 +1,25 @@
+{
+  // Root Deno configuration — see ci/README.md for the full contract.
+  //
+  // CI (`deno check supabase/functions/<fn>/index.ts`) and the integration
+  // test (`deno test tests/moderation-fail-closed.test.ts`) are invoked from
+  // the repository root. Deno discovers its config from the *invocation
+  // directory*, not from the checked file — without this file the nested
+  // `supabase/functions/deno.json` import map is never applied and Deno
+  // falls back to the root package.json / node_modules (byonm) resolution,
+  // which is what made the first CI run (99ebad0) fail with
+  // `npm:@supabase/realtime-js@2.112.4` unresolvable in a fresh checkout.
+  //
+  // `nodeModulesDir: "auto"` + the committed `deno.lock` lets `deno check`
+  // provision exactly the locked dependency versions on demand — the CI job
+  // that type-checks the functions does not need a separate `npm ci` step,
+  // and resolution stays deterministic (no floating ranges).
+  "nodeModulesDir": "auto",
+  "imports": {
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.112.4"
+  },
+  "compilerOptions": {
+    "lib": ["deno.window", "dom"],
+    "strict": true
+  }
+}
