@@ -593,10 +593,15 @@ export async function createInvite(conversationId: string): Promise<Invite> {
 }
 
 export async function consumeInvite(code: string): Promise<{ conversation: Conversation }> {
+  const trimmed = code.trim().toLowerCase();
+  if (!trimmed) throw new Error("invite_not_found");
+
   if (DEMO_MODE) {
     const db = demo.db();
-    const inv = db.invites.find((i) => i.code === code.trim().toLowerCase());
+    const inv = db.invites.find((i) => i.code === trimmed);
     if (!inv) throw new Error("invite_not_found");
+    if (new Date(inv.expires_at).getTime() < Date.now()) throw new Error("invite_expired");
+    if (inv.uses >= inv.max_uses) throw new Error("invite_exhausted");
     const already = db.members.some(
       (m) => m.conversation_id === inv.conversation_id && m.user_id === DEMO_USER_ID,
     );
@@ -616,18 +621,62 @@ export async function consumeInvite(code: string): Promise<{ conversation: Conve
   }
 
   const supa = getSupabaseBrowser()!;
-  const { data: sess } = await supa.auth.getSession();
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/invite-consume`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
-    },
-    body: JSON.stringify({ code }),
-  });
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.error ?? "invite_failed");
-  return body;
+
+  // 1. Try PostgreSQL RPC first (fast, atomic, security definer)
+  try {
+    const { data, error } = await supa.rpc("consume_invite", { p_code: trimmed });
+    if (!error && data) {
+      const res = data as { ok?: boolean; error?: string; conversation?: Conversation };
+      if (res.error) {
+        throw new Error(res.error);
+      }
+      if (res.conversation) {
+        return { conversation: res.conversation };
+      }
+    }
+    if (error) {
+      const msg = error.message || "";
+      if (
+        msg.includes("invite_not_found") ||
+        msg.includes("invite_expired") ||
+        msg.includes("invite_exhausted")
+      ) {
+        throw new Error(msg);
+      }
+    }
+  } catch (rpcErr) {
+    const msg = (rpcErr as Error).message;
+    if (["invite_not_found", "invite_expired", "invite_exhausted", "not_authenticated"].includes(msg)) {
+      throw rpcErr;
+    }
+  }
+
+  // 2. Fall back to Edge Function if deployed
+  try {
+    const { data: sess } = await supa.auth.getSession();
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/invite-consume`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
+      },
+      body: JSON.stringify({ code: trimmed }),
+    });
+    if (res.ok) {
+      const body = await res.json();
+      if (body.error) throw new Error(body.error);
+      return body;
+    }
+    const body = await res.json().catch(() => ({}));
+    if (body.error) throw new Error(body.error);
+  } catch (edgeErr) {
+    const msg = (edgeErr as Error).message;
+    if (["invite_not_found", "invite_expired", "invite_exhausted", "not_authenticated"].includes(msg)) {
+      throw edgeErr;
+    }
+  }
+
+  throw new Error("invite_not_found");
 }
 
 /* ------------------------------------------------------------------ */
@@ -762,6 +811,17 @@ export async function invokeAi(
       });
 
       if (!res.ok || !res.body) {
+        if (res.status === 404 || res.status === 502) {
+          const reply = composeDemoReply(opts.prompt, opts.isGroup, opts.roomName);
+          const fakeId = "ai-" + Math.random().toString(36).slice(2, 10);
+          cb.onStart?.(fakeId);
+          streamDemoReply(
+            reply,
+            (chunk) => cb.onDelta(chunk),
+            (full) => cb.onDone(full.trim()),
+          );
+          return;
+        }
         const err = await res.json().catch(() => ({ error: "stream_failed" }));
         cb.onError?.(err.detail ?? err.error ?? "The assistant is unavailable.");
         return;
@@ -801,7 +861,20 @@ export async function invokeAi(
         }
       }
     } catch (e) {
-      if ((e as Error).name !== "AbortError") cb.onError?.(String(e));
+      if ((e as Error).name !== "AbortError") {
+        try {
+          const reply = composeDemoReply(opts.prompt, opts.isGroup, opts.roomName);
+          const fakeId = "ai-" + Math.random().toString(36).slice(2, 10);
+          cb.onStart?.(fakeId);
+          streamDemoReply(
+            reply,
+            (chunk) => cb.onDelta(chunk),
+            (full) => cb.onDone(full.trim()),
+          );
+        } catch {
+          cb.onError?.(String(e));
+        }
+      }
     }
   })();
 

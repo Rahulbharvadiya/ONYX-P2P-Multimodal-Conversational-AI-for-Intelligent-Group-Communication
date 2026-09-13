@@ -523,9 +523,72 @@ as $$
   where conversation_id = p_conversation_id and user_id = auth.uid();
 $$;
 
+-- Redeem an invite code to join a conversation.
+-- Runs security definer so non-members can validate codes and be granted membership.
+create or replace function public.consume_invite(p_code text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_invite record;
+  v_conv record;
+  v_already boolean := false;
+begin
+  if v_uid is null then
+    return jsonb_build_object('error', 'not_authenticated');
+  end if;
+
+  select id, conversation_id, expires_at, max_uses, uses
+  into v_invite
+  from public.invites
+  where lower(trim(code)) = lower(trim(p_code));
+
+  if not found then
+    return jsonb_build_object('error', 'invite_not_found');
+  end if;
+
+  if v_invite.expires_at < now() then
+    return jsonb_build_object('error', 'invite_expired');
+  end if;
+
+  if v_invite.uses >= v_invite.max_uses then
+    return jsonb_build_object('error', 'invite_exhausted');
+  end if;
+
+  if exists (
+    select 1 from public.conversation_members
+    where conversation_id = v_invite.conversation_id and user_id = v_uid
+  ) then
+    v_already := true;
+  else
+    insert into public.conversation_members (conversation_id, user_id, role)
+    values (v_invite.conversation_id, v_uid, 'member');
+
+    update public.invites
+    set uses = uses + 1
+    where id = v_invite.id;
+  end if;
+
+  select id, name, type, topic
+  into v_conv
+  from public.conversations
+  where id = v_invite.conversation_id;
+
+  return jsonb_build_object(
+    'ok', true,
+    'conversation', row_to_json(v_conv),
+    'already_member', v_already
+  );
+end;
+$$;
+
 grant execute on function public.create_conversation(conversation_type, text, text, ai_mode) to authenticated;
 grant execute on function public.search_messages(text, int) to authenticated;
 grant execute on function public.mark_read(uuid) to authenticated;
+grant execute on function public.consume_invite(text) to authenticated;
 
 -- ---------------------------------------------------------------------
 -- 9c. RATE LIMITS ENFORCED IN THE DATABASE
