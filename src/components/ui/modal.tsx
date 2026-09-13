@@ -127,12 +127,12 @@ export function Modal({
             animate="show"
             exit="exit"
             className={cn(
-              "relative w-full max-w-lg rounded-t-[--r-xl] border border-[--border] bg-[--surface-raised]",
+              "relative flex max-h-[calc(100dvh-2.5rem)] w-full max-w-lg flex-col rounded-t-[--r-xl] border border-[--border] bg-[--surface-raised]",
               "shadow-[--e4] sm:rounded-[--r-xl]",
               className,
             )}
           >
-            <div className="flex items-start justify-between gap-4 border-b border-[--border] px-5 py-4">
+            <div className="flex shrink-0 items-start justify-between gap-4 border-b border-[--border] px-5 py-4">
               <div className="min-w-0">
                 <h2 className="text-[15px] font-semibold text-[--fg]">{title}</h2>
                 {description && (
@@ -143,9 +143,13 @@ export function Modal({
                 <X className="h-4 w-4" />
               </Button>
             </div>
-            {children && <div className="px-5 py-4">{children}</div>}
+            {children && (
+              <div className="flex-1 overflow-y-auto overscroll-contain px-5 py-4">
+                {children}
+              </div>
+            )}
             {footer && (
-              <div className="flex items-center justify-end gap-2 border-t border-[--border] px-5 py-3.5">
+              <div className="flex shrink-0 items-center justify-end gap-2 border-t border-[--border] px-5 py-3.5">
                 {footer}
               </div>
             )}

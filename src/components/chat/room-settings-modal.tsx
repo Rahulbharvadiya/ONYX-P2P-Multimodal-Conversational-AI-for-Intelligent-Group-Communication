@@ -233,6 +233,7 @@ export function RoomSettingsModal({
                   <div className="space-y-1.5">
                     {AI_MODES.map((m) => {
                       const locked = !isGroup && m.v !== "auto";
+                      const selected = aiMode === m.v;
                       return (
                         <button
                           key={m.v}
@@ -240,29 +241,43 @@ export function RoomSettingsModal({
                           disabled={(isGroup && !isAdmin) || locked}
                           onClick={() => setAiMode(m.v)}
                           className={cn(
-                            "flex w-full items-start gap-3 rounded-[--r-md] border p-3 text-left transition-all duration-[--d-micro]",
-                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--accent]/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[--bg-elevated]",
-                            aiMode === m.v
-                              ? "border-[--accent]/60 bg-[--accent-subtle] shadow-[0_1px_0_0_rgba(255,255,255,0.05)_inset]"
-                              : "border-[--border] hover:border-[--border-strong] hover:bg-[--bg-hover]",
+                            "flex w-full items-start gap-3 rounded-[10px] border p-3 text-left transition-all duration-150 cursor-pointer select-none",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--text-primary]",
+                            selected
+                              ? "border-[--text-primary] bg-[--bg-surface] shadow-[0_1px_3px_rgba(0,0,0,0.06)] ring-1 ring-[--text-primary]"
+                              : "border-[--border-color] bg-[--bg-surface]/60 hover:border-[--text-secondary] hover:bg-[--bg-surface]",
                             (locked || (isGroup && !isAdmin)) && "cursor-not-allowed opacity-45",
                           )}
                         >
                           <span
                             className={cn(
-                              "mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border-2 transition-colors duration-[--d-micro]",
-                              aiMode === m.v ? "border-[--accent]" : "border-[--border-strong]",
+                              "mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border transition-all duration-150",
+                              selected
+                                ? "border-[--text-primary] bg-[--text-primary]"
+                                : "border-[--border-color] bg-transparent",
                             )}
                           >
-                            {aiMode === m.v && (
-                              <span className="h-1.5 w-1.5 rounded-full bg-[--accent]" />
+                            {selected && (
+                              <span className="h-1.5 w-1.5 rounded-full bg-[--bg-surface]" />
                             )}
                           </span>
-                          <span className="min-w-0">
-                            <span className="block text-[13px] font-medium text-[--fg]">
-                              {m.label}
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-center gap-2">
+                              <span
+                                className={cn(
+                                  "text-[13px] font-semibold",
+                                  selected ? "text-[--text-primary]" : "text-[--text-secondary]",
+                                )}
+                              >
+                                {m.label}
+                              </span>
+                              {selected && (
+                                <span className="rounded-full bg-[--ai-badge-bg] px-2 py-0.5 font-mono text-[10px] font-bold text-[--ai-badge-text]">
+                                  ACTIVE
+                                </span>
+                              )}
                             </span>
-                            <span className="block text-[12px] leading-snug text-[--fg-muted]">
+                            <span className="mt-0.5 block text-[12px] leading-snug text-[--text-secondary]">
                               {locked ? "Not applicable to a 1:1 AI chat." : m.body}
                             </span>
                           </span>

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { MessagesSquare, Users } from "lucide-react";
+import { AtSign, MessagesSquare, ShieldOff, Sparkles, Users } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Textarea } from "@/components/ui/input";
@@ -11,10 +11,30 @@ import { createConversation } from "@/lib/data/api";
 import type { AiMode } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const AI_MODES: Array<{ v: AiMode; label: string; body: string }> = [
-  { v: "off", label: "Off", body: "Humans only. The assistant never posts." },
-  { v: "mention_only", label: "Mention only", body: "Responds when someone writes @ai." },
-  { v: "auto", label: "Auto", body: "Replies to every message. Best for small rooms." },
+const AI_MODES: Array<{
+  v: AiMode;
+  label: string;
+  body: string;
+  icon: React.ElementType;
+}> = [
+  {
+    v: "off",
+    label: "Off",
+    body: "Humans only. The assistant never posts.",
+    icon: ShieldOff,
+  },
+  {
+    v: "mention_only",
+    label: "Mention only",
+    body: "Responds when someone writes @ai.",
+    icon: AtSign,
+  },
+  {
+    v: "auto",
+    label: "Auto",
+    body: "Replies to every message. Best for small rooms.",
+    icon: Sparkles,
+  },
 ];
 
 export function NewConversationModal({
@@ -166,38 +186,83 @@ export function NewConversationModal({
             </Field>
 
             <div>
-              <p className="mb-2 text-[13px] font-medium tracking-[-0.005em] text-[--fg]">
-                AI participation
-              </p>
-              <div className="space-y-1.5">
-                {AI_MODES.map((m) => (
-                  <button
-                    key={m.v}
-                    type="button"
-                    onClick={() => setAiMode(m.v)}
-                    className={cn(
-                      "flex w-full items-start gap-3 rounded-[--r-md] border p-3 text-left transition-all duration-[--d-micro]",
-                      aiMode === m.v
-                        ? "border-[--accent]/60 bg-[--accent-subtle] shadow-[0_1px_0_0_rgba(255,255,255,0.05)_inset]"
-                        : "border-[--border] hover:border-[--border-strong] hover:bg-[--bg-hover]",
-                    )}
-                  >
-                    <span
+              <div className="mb-2 flex items-center justify-between">
+                <label className="text-[13px] font-semibold text-[--text-primary]">
+                  AI Participation
+                </label>
+                <span className="font-mono text-[11px] text-[--text-muted]">
+                  Selected:{" "}
+                  <span className="font-bold capitalize text-[--text-primary]">
+                    {aiMode.replace("_", " ")}
+                  </span>
+                </span>
+              </div>
+
+              <div role="radiogroup" aria-label="AI participation mode" className="space-y-2">
+                {AI_MODES.map((m) => {
+                  const selected = aiMode === m.v;
+                  const Icon = m.icon;
+                  return (
+                    <button
+                      key={m.v}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() => setAiMode(m.v)}
                       className={cn(
-                        "mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border-2 transition-colors duration-[--d-micro]",
-                        aiMode === m.v ? "border-[--accent]" : "border-[--border-strong]",
+                        "group relative flex w-full items-start gap-3 rounded-[10px] border p-3 text-left transition-all duration-150 cursor-pointer select-none",
+                        selected
+                          ? "border-[--text-primary] bg-[--bg-surface] shadow-[0_1px_3px_rgba(0,0,0,0.06)] ring-1 ring-[--text-primary]"
+                          : "border-[--border-color] bg-[--bg-surface]/60 hover:border-[--text-secondary] hover:bg-[--bg-surface]",
                       )}
                     >
-                      {aiMode === m.v && <span className="h-1.5 w-1.5 rounded-full bg-[--accent]" />}
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block text-[13px] font-medium text-[--fg]">{m.label}</span>
-                      <span className="block text-[12px] leading-snug text-[--fg-muted]">
-                        {m.body}
+                      <span
+                        className={cn(
+                          "mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border transition-all duration-150",
+                          selected
+                            ? "border-[--text-primary] bg-[--text-primary]"
+                            : "border-[--border-color] bg-transparent group-hover:border-[--text-secondary]",
+                        )}
+                      >
+                        {selected && <span className="h-1.5 w-1.5 rounded-full bg-[--bg-surface]" />}
                       </span>
-                    </span>
-                  </button>
-                ))}
+
+                      <span
+                        className={cn(
+                          "mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-[6px] transition-colors",
+                          selected
+                            ? "bg-[--ai-badge-bg] text-[--ai-badge-text]"
+                            : "bg-[--bg-subtle] text-[--text-secondary] group-hover:text-[--text-primary]",
+                        )}
+                      >
+                        <Icon className="h-3.5 w-3.5" />
+                      </span>
+
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-2">
+                          <span
+                            className={cn(
+                              "text-[13px] font-semibold",
+                              selected
+                                ? "text-[--text-primary]"
+                                : "text-[--text-secondary] group-hover:text-[--text-primary]",
+                            )}
+                          >
+                            {m.label}
+                          </span>
+                          {selected && (
+                            <span className="rounded-full bg-[--ai-badge-bg] px-2 py-0.5 font-mono text-[10px] font-bold text-[--ai-badge-text]">
+                              SELECTED
+                            </span>
+                          )}
+                        </span>
+                        <span className="mt-0.5 block text-[12px] leading-snug text-[--text-secondary]">
+                          {m.body}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
