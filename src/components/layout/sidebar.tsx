@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronRight,
   Command,
+  Compass,
   Globe,
   Hash,
   LogOut,
@@ -107,8 +108,8 @@ export function Sidebar({
             size="sm"
             className="w-full justify-center gap-1.5 border border-[--border-color] bg-[--bg-surface] text-[--text-primary] shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:bg-[--bg-subtle] font-semibold text-[13px]"
           >
-            <Users className="h-3.5 w-3.5 text-[--text-secondary]" />
-            New Group
+            <Compass className="h-3.5 w-3.5 text-[--text-secondary]" />
+            Join Room
           </Button>
         </div>
 

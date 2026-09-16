@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowDown, Hash, Settings2, Sparkles, Users } from "lucide-react";
+import { ArrowDown, Check, Copy, Hash, Settings2, Sparkles, UserPlus, Users } from "lucide-react";
 import { Composer } from "./composer";
 import { MessageItem } from "./message-item";
 import { RoomSettingsModal } from "./room-settings-modal";
@@ -11,6 +11,7 @@ import { StreamAnnouncer } from "./stream-announcer";
 import { AiModeBadge } from "@/components/layout/sidebar";
 import { AiAvatar, Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { Modal } from "@/components/ui/modal";
 import { MessageListSkeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { useSession } from "@/components/session-provider";
@@ -19,9 +20,11 @@ import { DEMO_MODE } from "@/lib/env";
 import { demo } from "@/lib/data/demo-store";
 import { getSupabaseBrowser } from "@/lib/supabase/client";
 import {
+  createInvite,
   deleteMessage,
   editMessage,
   invokeAi,
+  listInvites,
   listMembers,
   listMessages,
   listReactions,
@@ -54,6 +57,11 @@ export function ChatView({ conversation: initial }: { conversation: Conversation
   const [streamText, setStreamText] = React.useState("");
   const [typingUsers, setTypingUsers] = React.useState<string[]>([]);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [inviteModalOpen, setInviteModalOpen] = React.useState(false);
+  const [activeInviteCode, setActiveInviteCode] = React.useState<string | null>(null);
+  const [loadingInvite, setLoadingInvite] = React.useState(false);
+  const [copiedLink, setCopiedLink] = React.useState(false);
+  const [copiedCode, setCopiedCode] = React.useState(false);
   const [atBottom, setAtBottom] = React.useState(true);
 
   const scrollRef = React.useRef<HTMLDivElement>(null);
@@ -63,6 +71,50 @@ export function ChatView({ conversation: initial }: { conversation: Conversation
 
   const me = members.find((m) => m.user_id === uid);
   const isAdmin = me?.role === "owner" || me?.role === "admin";
+
+  const openInviteModal = React.useCallback(async () => {
+    setInviteModalOpen(true);
+    setLoadingInvite(true);
+    try {
+      const invs = await listInvites(conversation.id);
+      if (invs.length > 0) {
+        setActiveInviteCode(invs[0].code);
+      } else {
+        const newInv = await createInvite(conversation.id);
+        setActiveInviteCode(newInv.code);
+      }
+    } catch {
+      setActiveInviteCode(null);
+    } finally {
+      setLoadingInvite(false);
+    }
+  }, [conversation.id]);
+
+  const copyInviteLink = async () => {
+    const url = activeInviteCode
+      ? `${window.location.origin}/join/${activeInviteCode}`
+      : `${window.location.origin}/app/c/${conversation.id}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedLink(true);
+      toast.push({ kind: "success", title: "Invite link copied to clipboard!" });
+      setTimeout(() => setCopiedLink(false), 2000);
+    } catch {
+      toast.push({ kind: "error", title: "Clipboard unavailable", description: url });
+    }
+  };
+
+  const copyRoomCode = async () => {
+    const codeToUse = activeInviteCode || conversation.id;
+    try {
+      await navigator.clipboard.writeText(codeToUse);
+      setCopiedCode(true);
+      toast.push({ kind: "success", title: "Join code copied to clipboard!" });
+      setTimeout(() => setCopiedCode(false), 2000);
+    } catch {
+      toast.push({ kind: "error", title: "Clipboard unavailable", description: codeToUse });
+    }
+  };
 
   /* ---------------- load ---------------- */
   const load = React.useCallback(async () => {
@@ -525,6 +577,19 @@ export function ChatView({ conversation: initial }: { conversation: Conversation
           </div>
         )}
 
+        {isGroup && (
+          <Button
+            variant="secondary"
+            size="sm"
+            className="h-8 gap-1.5 rounded-[8px] border border-[--border-color] bg-[--bg-surface] px-2.5 text-[12px] font-semibold text-[--text-primary] hover:bg-[--bg-subtle]"
+            onClick={openInviteModal}
+            aria-label="Invite to room"
+          >
+            <UserPlus className="h-3.5 w-3.5 text-[--text-secondary]" />
+            <span className="hidden sm:inline">Invite</span>
+          </Button>
+        )}
+
         <Button
           variant="ghost"
           size="icon"
@@ -698,6 +763,50 @@ export function ChatView({ conversation: initial }: { conversation: Conversation
         }}
         onLeft={() => router.push("/app")}
       />
+
+      {isGroup && (
+        <Modal
+          open={inviteModalOpen}
+          onClose={() => setInviteModalOpen(false)}
+          title={`Invite to ${conversation.name ?? "Room"}`}
+          description="Share this code or link with others so they can join this room instantly."
+          className="max-w-md overflow-hidden border-[--border-color] bg-[--bg-surface]"
+        >
+          <div className="space-y-4 pt-1">
+            <div className="rounded-[10px] border border-[--border-color] bg-[--bg-subtle] p-3.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] font-semibold text-[--text-secondary]">Join Code:</span>
+                <span className="font-mono text-[14px] font-bold tracking-wider text-[--text-primary]">
+                  {loadingInvite ? "Generating..." : activeInviteCode || conversation.id.slice(0, 8)}
+                </span>
+              </div>
+              <div className="mt-2.5 flex gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={copyRoomCode}
+                  className="flex-1 justify-center gap-1.5 border border-[--border-color] bg-[--bg-surface] text-[12px]"
+                >
+                  {copiedCode ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+                  <span>{copiedCode ? "Copied" : "Copy Code"}</span>
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={copyInviteLink}
+                  className="flex-1 justify-center gap-1.5 bg-[--accent-black] text-[--accent-foreground] text-[12px] font-semibold hover:opacity-90"
+                >
+                  {copiedLink ? <Check className="h-3.5 w-3.5 text-emerald-300" /> : <Copy className="h-3.5 w-3.5" />}
+                  <span>{copiedLink ? "Copied" : "Copy Invite Link"}</span>
+                </Button>
+              </div>
+            </div>
+
+            <p className="text-[12px] leading-relaxed text-[--text-secondary]">
+              Anyone with this join code or link can join this group room directly without approval.
+            </p>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

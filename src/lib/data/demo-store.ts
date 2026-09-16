@@ -90,6 +90,16 @@ function seed(): DB {
         created_at: ago(240),
         archived_at: null,
       },
+      {
+        id: "44444444-4444-4444-8444-444444444444",
+        type: "group",
+        name: "Design & AI Guild",
+        topic: "Shared workspace for prompt engineering, UI polish, and multimodal research",
+        ai_mode: "auto",
+        created_by: BOT_MEMBERS[0].id,
+        created_at: ago(500),
+        archived_at: null,
+      },
     ],
     members: [
       {
@@ -114,6 +124,14 @@ function seed(): DB {
         role: (i === 0 ? "admin" : "member") as ConversationMember["role"],
         joined_at: ago(230 - i * 10),
         last_read_at: ago(5),
+        pinned_at: null,
+      })),
+      ...BOT_MEMBERS.map((b, i) => ({
+        conversation_id: "44444444-4444-4444-8444-444444444444",
+        user_id: b.id,
+        role: (i === 0 ? "owner" : "member") as ConversationMember["role"],
+        joined_at: ago(500 - i * 20),
+        last_read_at: ago(10),
         pinned_at: null,
       })),
     ],
@@ -200,7 +218,28 @@ function seed(): DB {
       },
     ],
     reactions: [],
-    invites: [],
+    invites: [
+      {
+        id: uuid(),
+        conversation_id: roomId,
+        code: "launch2026",
+        created_by: DEMO_USER_ID,
+        expires_at: new Date(Date.now() + 60 * 864e5).toISOString(),
+        max_uses: 100,
+        uses: 0,
+        created_at: now(),
+      },
+      {
+        id: uuid(),
+        conversation_id: "44444444-4444-4444-8444-444444444444",
+        code: "guild123",
+        created_by: BOT_MEMBERS[0].id,
+        expires_at: new Date(Date.now() + 60 * 864e5).toISOString(),
+        max_uses: 100,
+        uses: 0,
+        created_at: now(),
+      },
+    ],
     session: null,
     onboarded: false,
   };
@@ -216,6 +255,11 @@ function load(): DB {
   try {
     const raw = window.localStorage.getItem(KEY);
     memory = raw ? (JSON.parse(raw) as DB) : seed();
+    // Guarantee active invites exist even if user has older seed data in localStorage
+    if (memory && (!memory.invites || memory.invites.length === 0)) {
+      memory.invites = seed().invites;
+      save();
+    }
   } catch {
     memory = seed();
   }
@@ -223,11 +267,13 @@ function load(): DB {
 }
 
 function save() {
-  if (typeof window === "undefined" || !memory) return;
-  try {
-    window.localStorage.setItem(KEY, JSON.stringify(memory));
-  } catch {
-    /* quota — non-fatal in demo mode */
+  if (!memory) return;
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(KEY, JSON.stringify(memory));
+    } catch {
+      // quota or private mode
+    }
   }
   listeners.forEach((l) => l());
 }
@@ -266,6 +312,27 @@ export const demo = {
   },
 
   /* ---- conversations ---- */
+  listDiscoverableRooms(currentUserId: string = DEMO_USER_ID): Array<
+    Conversation & { member_count: number; invite_code?: string; is_member: boolean }
+  > {
+    const db = load();
+    const joinedSet = new Set(
+      db.members.filter((m) => m.user_id === currentUserId).map((m) => m.conversation_id),
+    );
+    return db.conversations
+      .filter((c) => c.type === "group" && !c.archived_at)
+      .map((c) => {
+        const memberCount = db.members.filter((m) => m.conversation_id === c.id).length;
+        const inv = db.invites.find((i) => i.conversation_id === c.id);
+        return {
+          ...c,
+          member_count: Math.max(memberCount, 1),
+          invite_code: inv?.code,
+          is_member: joinedSet.has(c.id),
+        };
+      });
+  },
+
   createConversation(input: {
     type: ConversationType;
     name?: string | null;
@@ -292,6 +359,18 @@ export const demo = {
       last_read_at: now(),
       pinned_at: null,
     });
+    if (input.type === "group") {
+      db.invites.push({
+        id: uuid(),
+        conversation_id: id,
+        code: Math.random().toString(16).slice(2, 10),
+        created_by: DEMO_USER_ID,
+        expires_at: new Date(Date.now() + 30 * 864e5).toISOString(),
+        max_uses: 100,
+        uses: 0,
+        created_at: now(),
+      });
+    }
     save();
     return id;
   },

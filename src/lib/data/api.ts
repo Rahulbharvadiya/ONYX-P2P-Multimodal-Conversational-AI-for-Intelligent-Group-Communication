@@ -170,6 +170,25 @@ export async function getConversation(id: string): Promise<Conversation | null> 
   return (data as Conversation) ?? null;
 }
 
+export async function getConversationPreview(id: string): Promise<Conversation | null> {
+  if (DEMO_MODE) {
+    return demo.db().conversations.find((c) => c.id === id && c.type === "group") ?? null;
+  }
+  const supa = getSupabaseBrowser();
+  if (!supa) return null;
+  try {
+    const { data } = await supa
+      .from("conversations")
+      .select("id, name, topic, type, ai_mode, created_at, created_by, archived_at")
+      .eq("id", id)
+      .eq("type", "group")
+      .maybeSingle();
+    return (data as Conversation) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function createConversation(input: {
   type: "direct_ai" | "group";
   name?: string | null;
@@ -186,7 +205,17 @@ export async function createConversation(input: {
     p_ai_mode: defaultAiMode,
   });
   if (error) throw error;
-  return data as string;
+  const convId = data as string;
+
+  if (input.type === "group") {
+    try {
+      await createInvite(convId);
+    } catch {
+      // Non-critical background invite generation
+    }
+  }
+
+  return convId;
 }
 
 export async function updateConversation(
@@ -747,61 +776,157 @@ export async function createInvite(conversationId: string): Promise<Invite> {
   return data as Invite;
 }
 
-export async function consumeInvite(code: string): Promise<{ conversation: Conversation }> {
-  const trimmed = code.trim().toLowerCase();
-  if (!trimmed) throw new Error("invite_not_found");
+export async function listDiscoverableRooms(): Promise<
+  Array<Conversation & { member_count: number; invite_code?: string; is_member: boolean }>
+> {
+  if (DEMO_MODE) {
+    return demo.listDiscoverableRooms();
+  }
+  const supa = getSupabaseBrowser();
+  if (!supa) return [];
+
+  // 1. Try RPC list_discoverable_rooms
+  try {
+    const { data: rpcRooms, error: rpcErr } = await supa.rpc("list_discoverable_rooms");
+    if (!rpcErr && Array.isArray(rpcRooms)) {
+      return rpcRooms as Array<
+        Conversation & { member_count: number; invite_code?: string; is_member: boolean }
+      >;
+    }
+  } catch {
+    // continue to fallback
+  }
+
+  try {
+    const { data: auth } = await supa.auth.getUser();
+    const uid = auth.user?.id;
+    const { data: convs, error } = await supa
+      .from("conversations")
+      .select("id, name, topic, type, ai_mode, created_by, created_at, archived_at")
+      .eq("type", "group")
+      .is("archived_at", null)
+      .order("created_at", { ascending: false })
+      .limit(30);
+
+    if (!error && convs) {
+      let myRoomIds = new Set<string>();
+      if (uid) {
+        const { data: myMemberships } = await supa
+          .from("conversation_members")
+          .select("conversation_id")
+          .eq("user_id", uid);
+        myRoomIds = new Set((myMemberships ?? []).map((m) => m.conversation_id));
+      }
+
+      return convs.map((c: Conversation) => ({
+        id: c.id,
+        name: c.name,
+        topic: c.topic,
+        type: c.type,
+        ai_mode: c.ai_mode,
+        created_by: c.created_by,
+        created_at: c.created_at,
+        archived_at: c.archived_at,
+        member_count: 1,
+        is_member: myRoomIds.has(c.id),
+      }));
+    }
+  } catch {
+    // fallback
+  }
+  return [];
+}
+
+export async function consumeInvite(codeOrIdentifier: string): Promise<{ conversation: Conversation }> {
+  let raw = codeOrIdentifier.trim();
+  if (!raw) throw new Error("invite_not_found");
+
+  // Automatically parse full links: e.g. /join/<codeOrId> or /app/c/<id>
+  if (raw.includes("/join/")) {
+    raw = raw.split("/join/").pop()!.split(/[?#]/)[0];
+  } else if (raw.includes("/app/c/")) {
+    raw = raw.split("/app/c/").pop()!.split(/[?#]/)[0];
+  }
+  const clean = raw.trim();
+  const cleanLower = clean.toLowerCase();
+  if (!cleanLower) throw new Error("invite_not_found");
 
   if (DEMO_MODE) {
     const db = demo.db();
-    const inv = db.invites.find((i) => i.code === trimmed);
-    if (!inv) throw new Error("invite_not_found");
-    if (new Date(inv.expires_at).getTime() < Date.now()) throw new Error("invite_expired");
-    if (inv.uses >= inv.max_uses) throw new Error("invite_exhausted");
+
+    // 1. Try finding by invite code (case-insensitive)
+    const inv = db.invites.find((i) => i.code.toLowerCase() === cleanLower);
+    let targetConvId: string | null = inv ? inv.conversation_id : null;
+
+    // 2. Try finding by conversation ID (UUID)
+    if (!targetConvId) {
+      const convById = db.conversations.find((c) => c.id.toLowerCase() === cleanLower && c.type === "group");
+      if (convById) targetConvId = convById.id;
+    }
+
+    // 3. Try finding by conversation name (case-insensitive)
+    if (!targetConvId) {
+      const convByName = db.conversations.find(
+        (c) => c.name && c.name.trim().toLowerCase() === cleanLower && c.type === "group",
+      );
+      if (convByName) targetConvId = convByName.id;
+    }
+
+    if (!targetConvId) throw new Error("invite_not_found");
+
+    const conv = db.conversations.find((c) => c.id === targetConvId);
+    if (!conv) throw new Error("invite_not_found");
+
+    if (inv) {
+      if (new Date(inv.expires_at).getTime() < Date.now()) throw new Error("invite_expired");
+      if (inv.uses >= inv.max_uses) throw new Error("invite_exhausted");
+      inv.uses += 1;
+    }
+
     const already = db.members.some(
-      (m) => m.conversation_id === inv.conversation_id && m.user_id === DEMO_USER_ID,
+      (m) => m.conversation_id === targetConvId && m.user_id === DEMO_USER_ID,
     );
     if (!already) {
       db.members.push({
-        conversation_id: inv.conversation_id,
+        conversation_id: targetConvId,
         user_id: DEMO_USER_ID,
         role: "member",
         joined_at: new Date().toISOString(),
         last_read_at: null,
         pinned_at: null,
       });
-      inv.uses += 1;
     }
     demo.commit();
-    return { conversation: db.conversations.find((c) => c.id === inv.conversation_id)! };
+    return { conversation: conv };
   }
 
   const supa = getSupabaseBrowser()!;
 
   // 1. Try PostgreSQL RPC first (fast, atomic, security definer)
   try {
-    const { data, error } = await supa.rpc("consume_invite", { p_code: trimmed });
+    const { data, error } = await supa.rpc("consume_invite", { p_code: cleanLower });
     if (!error && data) {
       const res = data as { ok?: boolean; error?: string; conversation?: Conversation };
-      if (res.error) {
-        throw new Error(res.error);
-      }
       if (res.conversation) {
         return { conversation: res.conversation };
+      }
+      if (res.error && res.error !== "invite_not_found") {
+        throw new Error(res.error);
       }
     }
     if (error) {
       const msg = error.message || "";
       if (
-        msg.includes("invite_not_found") ||
         msg.includes("invite_expired") ||
-        msg.includes("invite_exhausted")
+        msg.includes("invite_exhausted") ||
+        msg.includes("not_authenticated")
       ) {
         throw new Error(msg);
       }
     }
   } catch (rpcErr) {
     const msg = (rpcErr as Error).message;
-    if (["invite_not_found", "invite_expired", "invite_exhausted", "not_authenticated"].includes(msg)) {
+    if (["invite_expired", "invite_exhausted", "not_authenticated"].includes(msg)) {
       throw rpcErr;
     }
   }
@@ -815,20 +940,45 @@ export async function consumeInvite(code: string): Promise<{ conversation: Conve
         "Content-Type": "application/json",
         Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
       },
-      body: JSON.stringify({ code: trimmed }),
+      body: JSON.stringify({ code: cleanLower }),
     });
     if (res.ok) {
       const body = await res.json();
-      if (body.error) throw new Error(body.error);
-      return body;
+      if (body.conversation) return body;
     }
-    const body = await res.json().catch(() => ({}));
-    if (body.error) throw new Error(body.error);
   } catch (edgeErr) {
     const msg = (edgeErr as Error).message;
-    if (["invite_not_found", "invite_expired", "invite_exhausted", "not_authenticated"].includes(msg)) {
+    if (["invite_expired", "invite_exhausted", "not_authenticated"].includes(msg)) {
       throw edgeErr;
     }
+  }
+
+  // 3. Direct room UUID or room Name fallback for authenticated users
+  try {
+    const { data: auth } = await supa.auth.getUser();
+    if (auth.user) {
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clean);
+      let query = supa.from("conversations").select("*").eq("type", "group");
+      if (isUuid) {
+        query = query.eq("id", clean);
+      } else {
+        query = query.ilike("name", clean);
+      }
+      const { data: conv } = await query.maybeSingle();
+      if (conv) {
+        await supa.from("conversation_members").upsert(
+          {
+            conversation_id: conv.id,
+            user_id: auth.user.id,
+            role: "member",
+          },
+          { onConflict: "conversation_id,user_id" },
+        );
+        return { conversation: conv as Conversation };
+      }
+    }
+  } catch {
+    // ignore
   }
 
   throw new Error("invite_not_found");
