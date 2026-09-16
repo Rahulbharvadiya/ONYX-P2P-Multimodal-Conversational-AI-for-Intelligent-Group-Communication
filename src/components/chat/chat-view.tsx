@@ -193,6 +193,17 @@ export function ChatView({ conversation: initial }: { conversation: Conversation
   }, [members, profile]);
 
 
+  const profilesByIdRef = React.useRef(profilesById);
+  const messagesRef = React.useRef<Message[]>([]);
+
+  React.useEffect(() => {
+    profilesByIdRef.current = profilesById;
+  }, [profilesById]);
+
+  React.useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   /* ---------------- AI ---------------- */
   const streamTextRef = React.useRef("");
 
