@@ -47,9 +47,7 @@ drop policy if exists "members_update_admin" on public.conversation_members;
 -- (`user_id = auth.uid() or is_conversation_admin(...)`) as the check,
 -- which let a plain member rewrite their own `role`.
 --
--- Split it: members may update their own row as long as `role` is
--- unchanged (compared against the pre-update row); admins keep full
--- control over every row in their conversation.
+drop policy if exists "members_update_self" on public.conversation_members;
 create policy "members_update_self" on public.conversation_members
   for update
   using (user_id = auth.uid())
@@ -63,6 +61,7 @@ create policy "members_update_self" on public.conversation_members
     )
   );
 
+drop policy if exists "members_update_admin" on public.conversation_members;
 create policy "members_update_admin" on public.conversation_members
   for update
   using (public.is_conversation_admin(conversation_id, auth.uid()))

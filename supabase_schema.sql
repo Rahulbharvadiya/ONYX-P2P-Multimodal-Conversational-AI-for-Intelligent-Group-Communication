@@ -339,7 +339,7 @@ create policy "members_delete_self_or_admin" on public.conversation_members
 -- with no WITH CHECK lets Postgres reuse USING as the check — i.e. any member
 -- could set their own role to 'owner'. The self policy therefore pins `role`
 -- to its pre-update value; role changes require the admin policy.
-drop policy if exists "members_update_admin" on public.conversation_members;
+drop policy if exists "members_update_self" on public.conversation_members;
 create policy "members_update_self" on public.conversation_members
   for update
   using (user_id = auth.uid())
@@ -353,6 +353,7 @@ create policy "members_update_self" on public.conversation_members
     )
   );
 
+drop policy if exists "members_update_admin" on public.conversation_members;
 create policy "members_update_admin" on public.conversation_members
   for update
   using (public.is_conversation_admin(conversation_id, auth.uid()))
