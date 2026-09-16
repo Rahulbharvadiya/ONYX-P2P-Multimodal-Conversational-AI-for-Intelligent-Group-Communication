@@ -95,8 +95,8 @@ export function JoinModal({
             <DoorOpen className="h-4 w-4" />
           </span>
           <p className="text-[12.5px] leading-snug text-[--fg-muted]">
-            You're about to enter a shared workspace — messages, members, and the
-            assistant's context all carry over the moment you join.
+            You&apos;re about to enter a shared workspace — messages, members, and the
+            assistant&apos;s context all carry over the moment you join.
           </p>
         </div>
 

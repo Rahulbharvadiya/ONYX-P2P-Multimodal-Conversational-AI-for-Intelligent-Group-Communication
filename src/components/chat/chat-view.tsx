@@ -26,13 +26,14 @@ import {
   listMessages,
   listReactions,
   markRead,
+  postAiMessage,
   sendMessage,
   toggleReaction,
   uploadAttachment,
   type AiHandle,
 } from "@/lib/data/api";
 import type { Conversation, ConversationMember, Message, Reaction } from "@/lib/types";
-import { conversationTitle, dayLabel, shouldInvokeAi } from "@/lib/utils";
+import { conversationTitle, dayLabel, mentionsAi, shouldInvokeAi } from "@/lib/utils";
 import { computeReadReceipt } from "@/lib/read-receipts";
 import { tEnter, tExit } from "@/lib/motion";
 
@@ -70,7 +71,21 @@ export function ChatView({ conversation: initial }: { conversation: Conversation
       listMembers(conversation.id),
       listReactions(conversation.id),
     ]);
-    setMessages(msgs);
+    setMessages((prev) => {
+      const unsavedAi = prev.filter(
+        (m) =>
+          m.sender_type === "ai" &&
+          (m.content.trim().length > 0 || m.status === "streaming") &&
+          !msgs.some((serverMsg) => serverMsg.id === m.id),
+      );
+      if (unsavedAi.length === 0) return msgs;
+      const map = new Map<string, Message>();
+      msgs.forEach((m) => map.set(m.id, m));
+      unsavedAi.forEach((m) => {
+        if (!map.has(m.id)) map.set(m.id, m);
+      });
+      return Array.from(map.values()).sort((a, b) => a.created_at.localeCompare(b.created_at));
+    });
     setMembers(mems);
     setReactions(reacts);
     setLoading(false);
@@ -145,15 +160,21 @@ export function ChatView({ conversation: initial }: { conversation: Conversation
   }, []);
 
   React.useEffect(() => {
-    if (atBottom) scrollToBottom(false);
+    if (atBottom) {
+      requestAnimationFrame(() => scrollToBottom(false));
+    }
   }, [messages.length, streamText, atBottom, scrollToBottom]);
 
   React.useEffect(() => {
-    if (!loading && highlightId) {
-      const el = document.getElementById(`msg-${highlightId}`);
-      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (!loading) {
+      if (highlightId) {
+        const el = document.getElementById(`msg-${highlightId}`);
+        el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      } else {
+        requestAnimationFrame(() => scrollToBottom(false));
+      }
     }
-  }, [loading, highlightId]);
+  }, [loading, highlightId, conversation.id, scrollToBottom]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -161,51 +182,184 @@ export function ChatView({ conversation: initial }: { conversation: Conversation
     setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 120);
   };
 
+  /* ---------------- derived ---------------- */
+  const profilesById = React.useMemo(() => {
+    const map = new Map<string, ConversationMember["profile"]>();
+    members.forEach((m) => m.profile && map.set(m.user_id, m.profile));
+    if (profile && !map.has(profile.id)) {
+      map.set(profile.id, profile);
+    }
+    return map;
+  }, [members, profile]);
+
+
   /* ---------------- AI ---------------- */
+  const streamTextRef = React.useRef("");
+
   const runAi = React.useCallback(
     async (prompt: string, triggerId?: string, supersedesId?: string) => {
+      const placeholderId = "ai-" + Date.now();
+      streamTextRef.current = "";
       setStreamText("");
-      const handle = await invokeAi(
-        conversation.id,
-        {
-          triggerMessageId: triggerId,
-          supersedesId,
-          isGroup,
-          roomName: conversation.name,
-          prompt,
-        },
-        {
-          onStart: (id) => {
-            setStreamingId(id);
-            if (DEMO_MODE) void load();
+      setStreamingId(placeholderId);
+
+      const placeholderMsg: Message = {
+        id: placeholderId,
+        conversation_id: conversation.id,
+        sender_id: null,
+        sender_type: "ai",
+        content: "",
+        content_format: "markdown",
+        status: "streaming",
+        trigger_message_id: triggerId ?? null,
+        supersedes_id: supersedesId ?? null,
+        created_at: new Date().toISOString(),
+        edited_at: null,
+        deleted_at: null,
+      };
+
+      setMessages((prev) => {
+        const next = supersedesId ? prev.filter((m) => m.id !== supersedesId) : prev;
+        return [...next, placeholderMsg];
+      });
+
+      // Extract recent history for multi-turn conversational context with author names
+      const recentMessages = messagesRef.current.length > 0 ? messagesRef.current : messages;
+      const myDisplayName = profile?.display_name || "You";
+      const history = recentMessages
+        .filter(
+          (m) =>
+            !m.deleted_at &&
+            m.status !== "superseded" &&
+            m.id !== placeholderId &&
+            m.id !== supersedesId &&
+            m.id !== triggerId,
+        )
+        .slice(-25)
+        .map((m) => {
+          const authorName =
+            m.sender_type === "ai"
+              ? "ONYX"
+              : (m.sender_id ? profilesByIdRef.current.get(m.sender_id)?.display_name : undefined) ||
+                (m.sender_id === uid ? myDisplayName : "Member");
+          const authorPrefix = `[${authorName}]: `;
+          return {
+            role: m.sender_type === "ai" ? ("assistant" as const) : ("user" as const),
+            content: `${authorPrefix}${m.content}`,
+            name: authorName.replace(/[^a-zA-Z0-9_-]/g, ""),
+          };
+        });
+
+      try {
+        const handle = await invokeAi(
+          conversation.id,
+          {
+            triggerMessageId: triggerId,
+            supersedesId,
+            isGroup,
+            roomName: conversation.name,
+            prompt,
+            history,
           },
-          onDelta: (chunk) => setStreamText((t) => t + chunk),
-          onDone: () => {
-            setStreamingId(null);
-            setStreamText("");
-            void load();
+          {
+            onStart: (_id) => {
+              // placeholder already present in messages
+            },
+            onDelta: (chunk) => {
+              streamTextRef.current += chunk;
+              setStreamText((t) => t + chunk);
+            },
+            onDone: async (content?: string) => {
+              const finalContent = (content || streamTextRef.current || "").trim();
+
+              if (!finalContent) {
+                setStreamingId(null);
+                setStreamText("");
+                streamTextRef.current = "";
+                setMessages((prev) => prev.filter((m) => m.id !== placeholderId));
+                return;
+              }
+
+              // 1. Immediately stamp final content into the message in state so it NEVER flickers or disappears!
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === placeholderId
+                    ? { ...m, content: finalContent, status: "sent" }
+                    : m,
+                ),
+              );
+
+              // 2. Clear streaming state now that message content is already displaying finalContent
+              setStreamingId(null);
+              setStreamText("");
+              streamTextRef.current = "";
+
+              // 3. Persist message to local storage & Supabase
+              const aiMsg = await postAiMessage(
+                conversation.id,
+                finalContent,
+                triggerId,
+                supersedesId,
+              );
+
+              if (aiMsg && aiMsg.id !== placeholderId) {
+                setMessages((prev) =>
+                  prev.map((m) => (m.id === placeholderId ? aiMsg : m)),
+                );
+              }
+            },
+            onBlocked: () => {
+              setStreamingId(null);
+              setStreamText("");
+              streamTextRef.current = "";
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === placeholderId
+                    ? {
+                        ...m,
+                        content: "_This response was withheld by the safety filter._",
+                        status: "blocked",
+                      }
+                    : m,
+                ),
+              );
+              toast.push({
+                kind: "warning",
+                title: "Response withheld",
+                description: "The answer didn't pass moderation.",
+              });
+              void load();
+            },
+            onError: (msg) => {
+              setStreamingId(null);
+              setStreamText("");
+              streamTextRef.current = "";
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === placeholderId
+                    ? { ...m, content: msg || "The assistant failed.", status: "error" }
+                    : m,
+                ),
+              );
+              toast.push({ kind: "error", title: "The assistant failed", description: msg });
+              void load();
+            },
           },
-          onBlocked: () => {
-            setStreamingId(null);
-            setStreamText("");
-            toast.push({
-              kind: "warning",
-              title: "Response withheld",
-              description: "The answer didn't pass moderation.",
-            });
-            void load();
-          },
-          onError: (msg) => {
-            setStreamingId(null);
-            setStreamText("");
-            toast.push({ kind: "error", title: "The assistant failed", description: msg });
-            void load();
-          },
-        },
-      );
-      aiHandle.current = handle;
+        );
+        aiHandle.current = handle;
+      } catch (err) {
+        setStreamingId(null);
+        setStreamText("");
+        streamTextRef.current = "";
+        setMessages((prev) => prev.filter((m) => m.id !== placeholderId));
+        toast.push({
+          kind: "error",
+          title: "The assistant failed",
+          description: String(err),
+        });
+      }
     },
-    [conversation.id, conversation.name, isGroup, load, toast],
+    [conversation.id, conversation.name, isGroup, load, toast, profile, uid],
   );
 
   const handleSend = async (text: string, files: File[]) => {
@@ -236,8 +390,13 @@ export function ChatView({ conversation: initial }: { conversation: Conversation
           });
         }
       }
-      if (files.length > 0) void load();
-      if (shouldInvokeAi(text, conversation.ai_mode)) {
+      const isDirectAi = conversation.type === "direct_ai";
+      // Direct 1-on-1 AI chat: assistant responds directly.
+      // Group rooms / team chats: assistant ONLY responds if explicitly tagged with @ai!
+      const shouldTrigger = isDirectAi
+        ? conversation.ai_mode !== "off"
+        : conversation.ai_mode !== "off" && mentionsAi(text);
+      if (shouldTrigger) {
         await runAi(text, msg.id);
       }
     } catch (e) {
@@ -248,8 +407,13 @@ export function ChatView({ conversation: initial }: { conversation: Conversation
   const handleStop = () => {
     aiHandle.current?.stop();
     aiHandle.current = null;
+    const partial = streamTextRef.current.trim();
+    if (partial) {
+      void postAiMessage(conversation.id, partial);
+    }
     setStreamingId(null);
     setStreamText("");
+    streamTextRef.current = "";
     void load();
   };
 
@@ -276,12 +440,6 @@ export function ChatView({ conversation: initial }: { conversation: Conversation
       });
   };
 
-  /* ---------------- derived ---------------- */
-  const profilesById = React.useMemo(() => {
-    const map = new Map<string, ConversationMember["profile"]>();
-    members.forEach((m) => m.profile && map.set(m.user_id, m.profile));
-    return map;
-  }, [members]);
 
   const visible = React.useMemo(
     () => messages.filter((m) => !m.deleted_at && m.status !== "superseded"),
@@ -292,7 +450,7 @@ export function ChatView({ conversation: initial }: { conversation: Conversation
   const canRegenerate = !streamingId;
 
   return (
-    <div className="relative flex h-full flex-col">
+    <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       {/* ambient conversation atmosphere — extremely restrained, purely decorative */}
       <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
         <div
@@ -368,11 +526,11 @@ export function ChatView({ conversation: initial }: { conversation: Conversation
       </header>
 
       {/* ---------- messages ---------- */}
-      <div className="relative min-h-0 flex-1">
+      <div className="relative min-h-0 flex-1 overflow-hidden">
         <div
           ref={scrollRef}
           onScroll={onScroll}
-          className="h-full scroll-smooth overflow-y-auto overscroll-contain px-2 pb-6 sm:px-6"
+          className="custom-scrollbar h-full w-full scroll-smooth overflow-y-auto overscroll-contain px-2 pb-16 pt-2 sm:px-6"
         >
           {loading ? (
             <MessageListSkeleton />
@@ -504,15 +662,17 @@ export function ChatView({ conversation: initial }: { conversation: Conversation
       <StreamAnnouncer text={streamText} active={Boolean(streamingId)} />
 
       {/* ---------- composer ---------- */}
-      <Composer
-        members={members}
-        isGroup={isGroup}
-        aiMode={conversation.ai_mode}
-        streaming={Boolean(streamingId)}
-        onSend={handleSend}
-        onStop={handleStop}
-        onTyping={handleTyping}
-      />
+      <div className="shrink-0">
+        <Composer
+          members={members}
+          isGroup={isGroup}
+          aiMode={conversation.ai_mode}
+          streaming={Boolean(streamingId)}
+          onSend={handleSend}
+          onStop={handleStop}
+          onTyping={handleTyping}
+        />
+      </div>
 
       <RoomSettingsModal
         open={settingsOpen}

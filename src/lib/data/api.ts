@@ -178,11 +178,12 @@ export async function createConversation(input: {
 }): Promise<string> {
   if (DEMO_MODE) return demo.createConversation(input);
   const supa = getSupabaseBrowser()!;
+  const defaultAiMode = input.type === "direct_ai" ? "auto" : (input.ai_mode ?? "mention_only");
   const { data, error } = await supa.rpc("create_conversation", {
     p_type: input.type,
     p_name: input.name ?? null,
     p_topic: input.topic ?? null,
-    p_ai_mode: input.ai_mode ?? "auto",
+    p_ai_mode: defaultAiMode,
   });
   if (error) throw error;
   return data as string;
@@ -302,6 +303,78 @@ export async function markRead(conversationId: string): Promise<void> {
 /* ------------------------------------------------------------------ */
 /* Messages                                                            */
 /* ------------------------------------------------------------------ */
+/* Messages & Persistent AI Cache                                     */
+/* ------------------------------------------------------------------ */
+
+const LOCAL_AI_KEY = (convId: string) => `onyx_ai_messages_${convId}`;
+
+function isValidUuid(str?: string | null): boolean {
+  if (!str) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+}
+
+function getLocalAiMessages(conversationId: string): Message[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(LOCAL_AI_KEY(conversationId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalAiMessage(conversationId: string, msg: Message): void {
+  if (typeof window === "undefined") return;
+  try {
+    const existing = getLocalAiMessages(conversationId);
+    const filtered = existing.filter((m) => m.id !== msg.id && m.id !== msg.supersedes_id);
+    filtered.push(msg);
+    if (filtered.length > 200) filtered.splice(0, filtered.length - 200);
+    localStorage.setItem(LOCAL_AI_KEY(conversationId), JSON.stringify(filtered));
+  } catch {}
+}
+
+function updateLocalAiMessage(messageId: string, patch: Partial<Message>): void {
+  if (typeof window === "undefined") return;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith("onyx_ai_messages_")) {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const list = JSON.parse(raw);
+          if (Array.isArray(list) && list.some((m: Message) => m.id === messageId)) {
+            const updated = list.map((m: Message) => (m.id === messageId ? { ...m, ...patch } : m));
+            localStorage.setItem(key, JSON.stringify(updated));
+            break;
+          }
+        }
+      }
+    }
+  } catch {}
+}
+
+function deleteLocalAiMessage(messageId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith("onyx_ai_messages_")) {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const list = JSON.parse(raw);
+          if (Array.isArray(list) && list.some((m: Message) => m.id === messageId)) {
+            const filtered = list.filter((m: Message) => m.id !== messageId);
+            localStorage.setItem(key, JSON.stringify(filtered));
+            break;
+          }
+        }
+      }
+    }
+  } catch {}
+}
 
 export async function listMessages(conversationId: string): Promise<Message[]> {
   if (DEMO_MODE) {
@@ -322,14 +395,29 @@ export async function listMessages(conversationId: string): Promise<Message[]> {
     .is("deleted_at", null)
     .order("created_at", { ascending: true })
     .limit(500);
-  // Flatten the joined attachment rows onto each message.
-  return (data ?? []).map((row: Message & { message_attachments?: MessageAttachment[] }) => {
+
+  // Flatten joined attachment rows
+  const serverMsgs = (data ?? []).map((row: Message & { message_attachments?: MessageAttachment[] }) => {
     const { message_attachments, ...msg } = row;
     const attachments = (message_attachments ?? []).sort((a, b) =>
       a.created_at.localeCompare(b.created_at),
     );
     return { ...msg, attachments } as Message;
   });
+
+  // Merge server messages with persistent local AI messages so they NEVER disappear!
+  const localAi = getLocalAiMessages(conversationId);
+  if (localAi.length === 0) return serverMsgs;
+
+  const map = new Map<string, Message>();
+  serverMsgs.forEach((m) => map.set(m.id, m));
+  localAi.forEach((m) => {
+    if (!map.has(m.id) && !m.deleted_at && m.status !== "superseded") {
+      map.set(m.id, m);
+    }
+  });
+
+  return Array.from(map.values()).sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
 export async function sendMessage(conversationId: string, content: string): Promise<Message> {
@@ -357,6 +445,71 @@ export async function sendMessage(conversationId: string, content: string): Prom
     .single();
   if (error) throw error;
   return data as Message;
+}
+
+export async function postAiMessage(
+  conversationId: string,
+  content: string,
+  triggerMessageId?: string | null,
+  supersedesId?: string | null,
+): Promise<Message | null> {
+  if (DEMO_MODE) {
+    return demo.addMessage({
+      conversation_id: conversationId,
+      sender_id: null,
+      sender_type: "ai",
+      content,
+      status: "sent",
+      trigger_message_id: triggerMessageId ?? null,
+      supersedes_id: supersedesId ?? null,
+    });
+  }
+
+  const supa = getSupabaseBrowser();
+  if (!supa) return null;
+
+  const fallbackMsg: Message = {
+    id: "ai-" + Math.random().toString(36).slice(2, 11) + "-" + Date.now(),
+    conversation_id: conversationId,
+    sender_id: null,
+    sender_type: "ai",
+    content,
+    content_format: "markdown",
+    status: "sent",
+    trigger_message_id: triggerMessageId ?? null,
+    supersedes_id: supersedesId ?? null,
+    created_at: new Date().toISOString(),
+    edited_at: null,
+    deleted_at: null,
+  };
+
+  // Always save locally first so the message is never lost
+  saveLocalAiMessage(conversationId, fallbackMsg);
+
+  try {
+    const { data: msgId, error } = await supa.rpc("post_ai_message", {
+      p_conversation_id: conversationId,
+      p_content: content,
+      p_trigger_message_id: isValidUuid(triggerMessageId) ? triggerMessageId : null,
+      p_supersedes_id: isValidUuid(supersedesId) ? supersedesId : null,
+    });
+    if (!error && msgId) {
+      const { data } = await supa
+        .from("messages")
+        .select("*, message_attachments(*)")
+        .eq("id", msgId)
+        .single();
+      if (data) {
+        const serverMsg = data as Message;
+        saveLocalAiMessage(conversationId, serverMsg);
+        return serverMsg;
+      }
+    }
+  } catch {
+    // Retain fallbackMsg in local storage
+  }
+
+  return fallbackMsg;
 }
 
 /* ------------------------------------------------------------------ */
@@ -439,11 +592,12 @@ export async function editMessage(id: string, content: string): Promise<void> {
     demo.updateMessage(id, { content, edited_at: new Date().toISOString() });
     return;
   }
+  updateLocalAiMessage(id, { content, edited_at: new Date().toISOString() });
   const { error } = await getSupabaseBrowser()!
     .from("messages")
     .update({ content, edited_at: new Date().toISOString() })
     .eq("id", id);
-  if (error) throw error;
+  if (error && !id.startsWith("ai-")) throw error;
 }
 
 export async function deleteMessage(id: string): Promise<void> {
@@ -451,11 +605,12 @@ export async function deleteMessage(id: string): Promise<void> {
     demo.updateMessage(id, { deleted_at: new Date().toISOString() });
     return;
   }
+  deleteLocalAiMessage(id);
   const { error } = await getSupabaseBrowser()!
     .from("messages")
     .update({ deleted_at: new Date().toISOString() })
     .eq("id", id);
-  if (error) throw error;
+  if (error && !id.startsWith("ai-")) throw error;
 }
 
 /* ------------------------------------------------------------------ */
@@ -755,6 +910,7 @@ export async function invokeAi(
     isGroup: boolean;
     roomName?: string | null;
     prompt: string;
+    history?: Array<{ role: "user" | "assistant"; content: string; name?: string }>;
   },
   cb: AiStreamCallbacks,
 ): Promise<AiHandle> {
@@ -765,12 +921,14 @@ export async function invokeAi(
       sender_type: "ai",
       sender_id: null,
       content: "",
+      content_format: "markdown",
       status: "streaming",
+      trigger_message_id: opts.triggerMessageId ?? null,
       supersedes_id: opts.supersedesId ?? null,
     });
     cb.onStart?.(placeholder.id);
 
-    const reply = composeDemoReply(opts.prompt, opts.isGroup, opts.roomName);
+    const reply = composeDemoReply(opts.prompt, opts.isGroup, opts.roomName, opts.history);
     const handle = streamDemoReply(
       reply,
       (chunk) => cb.onDelta(chunk),
@@ -790,40 +948,36 @@ export async function invokeAi(
     return { stop: () => handle.cancel() };
   }
 
-  const supa = getSupabaseBrowser()!;
-  const { data: sess } = await supa.auth.getSession();
   const controller = new AbortController();
 
   (async () => {
     try {
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/ai-orchestrator`, {
+      const res = await fetch("/api/chat", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
         },
         body: JSON.stringify({
           conversation_id: conversationId,
           trigger_message_id: opts.triggerMessageId,
           supersedes_id: opts.supersedesId,
+          is_group: opts.isGroup,
+          room_name: opts.roomName,
+          prompt: opts.prompt,
+          history: opts.history,
         }),
         signal: controller.signal,
       });
 
       if (!res.ok || !res.body) {
-        if (res.status === 404 || res.status === 502) {
-          const reply = composeDemoReply(opts.prompt, opts.isGroup, opts.roomName);
-          const fakeId = "ai-" + Math.random().toString(36).slice(2, 10);
-          cb.onStart?.(fakeId);
-          streamDemoReply(
-            reply,
-            (chunk) => cb.onDelta(chunk),
-            (full) => cb.onDone(full.trim()),
-          );
-          return;
-        }
-        const err = await res.json().catch(() => ({ error: "stream_failed" }));
-        cb.onError?.(err.detail ?? err.error ?? "The assistant is unavailable.");
+        const reply = composeDemoReply(opts.prompt, opts.isGroup, opts.roomName, opts.history);
+        const fakeId = "ai-" + Math.random().toString(36).slice(2, 10);
+        cb.onStart?.(fakeId);
+        streamDemoReply(
+          reply,
+          (chunk) => cb.onDelta(chunk),
+          (full) => cb.onDone(full.trim()),
+        );
         return;
       }
 

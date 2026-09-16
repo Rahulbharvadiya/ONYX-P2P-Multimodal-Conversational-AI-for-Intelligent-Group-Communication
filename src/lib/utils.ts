@@ -107,7 +107,7 @@ export function partitionPinned<T extends { pinned_at?: string | null }>(
   return { pinned, rest };
 }
 
-export const MENTION_RE = /@ai\b/i;
+export const MENTION_RE = /@(ai|onyx|assistant|bot)\b/i;
 
 export function mentionsAi(text: string): boolean {
   return MENTION_RE.test(text);

@@ -77,5 +77,9 @@ export default function ConversationPage() {
     );
   }
 
-  return <ChatView conversation={conversation} />;
+  return (
+    <div className="flex h-full w-full min-h-0 flex-1 flex-col overflow-hidden">
+      <ChatView conversation={conversation} />
+    </div>
+  );
 }

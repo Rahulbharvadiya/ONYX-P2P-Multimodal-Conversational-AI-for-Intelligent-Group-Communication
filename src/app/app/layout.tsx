@@ -187,7 +187,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           )}
         </AnimatePresence>
 
-        <div className="relative flex min-w-0 flex-1 flex-col">
+        <div className="relative flex min-w-0 min-h-0 flex-1 flex-col h-full overflow-hidden">
           <OfflineBanner />
 
           {/* mobile top bar — a soft glass tray instead of a hard-ruled
@@ -206,7 +206,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <span className="text-[14px] font-semibold">ONYX</span>
           </div>
 
-          <main className="min-h-0 flex-1">{children}</main>
+          <main className="min-h-0 flex-1 h-full overflow-hidden flex flex-col">{children}</main>
         </div>
       </motion.div>
 

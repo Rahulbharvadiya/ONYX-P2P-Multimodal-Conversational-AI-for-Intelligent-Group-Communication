@@ -405,7 +405,7 @@ export default function LandingPage() {
                 Everyone in the room shares one thread — not a separate copy each
               </h3>
               <p className="mt-4 text-pretty text-[14.5px] leading-relaxed text-[--fg-muted]">
-                Owners set the room up, admins manage who's in it, members just talk. Presence and
+                Owners set the room up, admins manage who&apos;s in it, members just talk. Presence and
                 typing indicators make it feel live; reactions and a per-room topic keep it on-track —
                 including for the assistant, which reads that topic before it answers.
               </p>
@@ -471,8 +471,8 @@ export default function LandingPage() {
                   It reads the room before it answers — not just the message
                 </h3>
                 <p className="mt-4 text-pretty text-[14.5px] leading-relaxed text-[--fg-muted]">
-                  When it's brought in, the assistant sees the same thread everyone else does: the
-                  topic, the recent back-and-forth, who's asking. Its reply streams into the room as one
+                  When it&apos;s brought in, the assistant sees the same thread everyone else does: the
+                  topic, the recent back-and-forth, who&apos;s asking. Its reply streams into the room as one
                   message that updates live, so nobody is watching a private answer arrive somewhere
                   else.
                 </p>

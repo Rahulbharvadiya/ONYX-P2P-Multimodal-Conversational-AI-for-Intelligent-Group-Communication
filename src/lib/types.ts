@@ -45,6 +45,7 @@ export interface Message {
   content: string;
   content_format: string;
   status: MessageStatus;
+  trigger_message_id?: string | null;
   supersedes_id: string | null;
   created_at: string;
   edited_at: string | null;

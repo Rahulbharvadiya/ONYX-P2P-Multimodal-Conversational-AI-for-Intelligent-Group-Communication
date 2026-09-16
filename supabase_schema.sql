@@ -585,10 +585,69 @@ begin
 end;
 $$;
 
+-- Post an AI message row. Runs as security definer so authenticated members
+-- can save AI responses (since messages RLS restricts normal insert to sender_type = 'human').
+create or replace function public.post_ai_message(
+  p_conversation_id uuid,
+  p_content text,
+  p_trigger_message_id uuid default null,
+  p_supersedes_id uuid default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_msg_id uuid;
+begin
+  if v_uid is null then
+    raise exception 'not_authenticated';
+  end if;
+
+  if not exists (
+    select 1 from public.conversation_members
+    where conversation_id = p_conversation_id and user_id = v_uid
+  ) then
+    raise exception 'not_a_member';
+  end if;
+
+  if p_supersedes_id is not null then
+    update public.messages
+    set status = 'superseded'
+    where id = p_supersedes_id and conversation_id = p_conversation_id;
+  end if;
+
+  insert into public.messages (
+    conversation_id,
+    sender_id,
+    sender_type,
+    content,
+    status,
+    trigger_message_id,
+    supersedes_id
+  )
+  values (
+    p_conversation_id,
+    null,
+    'ai',
+    p_content,
+    'sent',
+    p_trigger_message_id,
+    p_supersedes_id
+  )
+  returning id into v_msg_id;
+
+  return v_msg_id;
+end;
+$$;
+
 grant execute on function public.create_conversation(conversation_type, text, text, ai_mode) to authenticated;
 grant execute on function public.search_messages(text, int) to authenticated;
 grant execute on function public.mark_read(uuid) to authenticated;
 grant execute on function public.consume_invite(text) to authenticated;
+grant execute on function public.post_ai_message(uuid, text, uuid, uuid) to authenticated;
 
 -- ---------------------------------------------------------------------
 -- 9c. RATE LIMITS ENFORCED IN THE DATABASE
