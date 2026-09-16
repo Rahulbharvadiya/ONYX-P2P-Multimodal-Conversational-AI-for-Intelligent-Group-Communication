@@ -439,4 +439,4 @@ The security model (RLS on every table, server-only keys, fail-closed moderation
 
 </div>
 
-Deployed at: https://group-chatbot.onrender.com/
+Deployed at: https://onyx-p2p-communication.vercel.app/
