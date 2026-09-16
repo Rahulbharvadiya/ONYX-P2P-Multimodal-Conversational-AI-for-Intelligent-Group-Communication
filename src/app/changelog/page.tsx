@@ -14,7 +14,7 @@ export const metadata: Metadata = {
 // §1: releases are the source of truth; regenerate hourly.
 export const revalidate = 3600;
 
-const REPO = process.env.NEXT_PUBLIC_GITHUB_REPO ?? "Rahulbharvadiya/Group-Chatbot";
+const REPO = process.env.NEXT_PUBLIC_GITHUB_REPO ?? "Rahulbharvadiya/ONYX-P2P-Multimodal-Conversational-AI-for-Intelligent-Group-Communication";
 
 interface Release {
   id: number;
